@@ -23,7 +23,10 @@ REMOTE_FIXED_21_23 = bytes.fromhex("00 08 10")
 REMOTE_FIXED_27 = 0x64
 # Confirmed identical across both known installations regardless of their
 # min/max setpoint configuration, so still treated as fixed. Meaning
-# unknown (not outdoor temperature -- that's parse_house_temperature).
+# unknown -- NOT outdoor temperature despite an earlier note here claiming
+# that: the user has since confirmed parse_house_temperature below is the
+# average *indoor* temperature, not outdoor. The real outdoor-temperature
+# source is still unidentified.
 REMOTE_FIXED_32_35 = bytes.fromhex("02 A8 03 14")
 # Also turned out to be per-installation, not fixed: 0x0012 on the original
 # reference installation, 0x0000 on a second, unrelated one (confirmed
@@ -203,6 +206,11 @@ def parse_house_temperature(raw: bytes, *, interface_id: bytes) -> HouseTemperat
 
     The frame does not establish an X-165 association or RF direction. Selecting
     an interface ID is independent of selecting the thermostat controller ID.
+
+    Despite the "house temperature" naming (kept for now to avoid an API
+    churn), the user has confirmed this is the average *indoor* temperature
+    across all rooms, not outdoor temperature. The real outdoor-temperature
+    source has not yet been located in any decoded frame.
     """
     validate_i167_frame(raw, interface_id=interface_id)
     if len(raw) != 50 or raw[9:13] != interface_id or raw[13:16] != bytes.fromhex("01 17 1E"):
