@@ -1,0 +1,34 @@
+# Bring-up firmware: verifies SPI to the CC1101, configures it for Uponor
+# Smatrix Wave RX, and logs every hardware-accepted packet as hex over the
+# normal ESPHome log (visible via USB serial or `esphome logs`).
+#
+# No sensors/entities yet -- this phase is just "can the CC1101 receive and
+# CRC-validate the same frames the RTL-SDR already decodes". Compare the hex
+# this logs against frames from the running uponor-x165 Docker container.
+
+esphome:
+  name: uponor-cc1101-bringup
+
+esp32:
+  board: esp32dev  # adjust to your actual board
+
+logger:
+  level: DEBUG
+
+# No Wi-Fi/API needed for this bring-up test -- watch over USB serial.
+# Add `wifi:` + `api:` back once you want OTA/remote logs.
+
+external_components:
+  - source:
+      type: local
+      path: esphome/cc1101_uponor
+    components: [cc1101_uponor]
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+cc1101_uponor:
+  cs_pin: GPIO5
+  gdo0_pin: GPIO4
