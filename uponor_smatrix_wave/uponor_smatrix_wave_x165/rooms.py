@@ -35,14 +35,26 @@ def room_name(device_id: bytes) -> str | None:
 # different ID space from ROOM_NAMES above -- it has no relation to a
 # thermostat's own 4-byte device_id, and is only ever a single byte.
 #
-# Confirmed by changing one room's setpoint at a time via the I-167 and
-# matching which room_primary code carried the new value in the resulting
-# RemoteSetpointFrame (it's sent three times in quick succession right after
-# the change).
+# 0x7C (Sovrum 2) and 0xD0 (Sovrum 4) were confirmed directly: changing one
+# room's setpoint at a time via the I-167 and matching which room_primary
+# code carried the new value in the resulting RemoteSetpointFrame (sent
+# three times in quick succession right after the change).
+#
+# The other seven were solved from the I-167 app's own room-list channel
+# numbers (11, 12, 14-1A hex -- 13 is skipped, apparently unused) via the
+# exact linear relationship room_primary = 21 * channel - 296, derived from
+# the two confirmed pairs above and verified against every observed-but-
+# then-unidentified room_primary byte in the capture logs.
 ROOM_PRIMARY_NAMES: dict[int, str] = {
+    0x3D: "Klädvård",
+    0x52: "K-E-V",
     0x7C: "Sovrum 2",
+    0x91: "WC",
+    0xA6: "Sovrum 1",
+    0xBB: "Badrum",
     0xD0: "Sovrum 4",
-    # Still unmapped: 0xFA, 0x3D, 0x52, 0x91, 0xA6, 0xBB, 0xE5.
+    0xE5: "Sovrum 3",
+    0xFA: "Allrum",
 }
 
 
