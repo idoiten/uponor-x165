@@ -25,6 +25,7 @@ from uponor_smatrix_wave_x165.state import DeviceRegistry, display_temperature
 from uponor_smatrix_wave_x165.mqtt_bridge import MqttBridge, add_mqtt_arguments, config_from_args
 from uponor_smatrix_wave_x165.frame_log import FrameJournal
 from uponor_smatrix_wave_x165.interface import parse_house_temperature, parse_system_mode
+from uponor_smatrix_wave_x165.rooms import room_name
 
 
 def thermostat_id(value: str) -> bytes:
@@ -106,11 +107,18 @@ def format_value(value: float | None, *, cached: bool) -> str:
     return f"{value:.2f} C" + (" (cached)" if cached else "")
 
 
+def device_label(device_id: bytes) -> str:
+    """Hex device_id, annotated with its room name when known."""
+    name = room_name(device_id)
+    hex_id = device_id.hex().upper()
+    return f"{hex_id} ({name})" if name else hex_id
+
+
 def print_frame(frame, state, observed_at: datetime, result: dict, burst: LiveBurst, debug: bool, sample_rate: int) -> None:
     temperature_cached = frame.raw_temperature is None and state.temperature_c is not None
     setpoint_cached = frame.raw_setpoint is None and state.setpoint_c is not None
     known = " known" if frame.device_id in KNOWN_THERMOSTAT_IDS else " discovered"
-    print(f"[{observed_at:%H:%M:%S}] Uponor {frame.device_id.hex().upper()} ({known.strip()})")
+    print(f"[{observed_at:%H:%M:%S}] Uponor {device_label(frame.device_id)} ({known.strip()})")
     print(f"  temperature: {format_value(state.temperature_c, cached=temperature_cached)}")
     print(f"  setpoint:    {format_value(state.setpoint_c, cached=setpoint_cached)}")
     if state.bypass_enabled is not None:
@@ -216,7 +224,7 @@ def present_decoded(
         return True, False
     show = not quiet and (debug_device is None or frame.device_id == debug_device)
     if show and frame.device_id not in registry.devices:
-        print(f"[{observed_at:%H:%M:%S}] New thermostat discovered: {frame.device_id.hex().upper()}", flush=True)
+        print(f"[{observed_at:%H:%M:%S}] New thermostat discovered: {device_label(frame.device_id)}", flush=True)
     state = registry.update(frame, observed_at)
     if mqtt_bridge is not None:
         status = mqtt_bridge.observe(state)
@@ -225,7 +233,7 @@ def present_decoded(
     if mqtt_bridge is not None:
         temp = display_temperature(state.last_raw_temperature)
         target = display_temperature(state.last_raw_setpoint)
-        print(f"[{observed_at:%H:%M:%S}] {frame.device_id.hex().upper()}  temp={temp}  setpoint={target}  {status}", flush=True)
+        print(f"[{observed_at:%H:%M:%S}] {device_label(frame.device_id)}  temp={temp}  setpoint={target}  {status}", flush=True)
     if debug or debug_device is not None or mqtt_bridge is None:
         print_frame(frame, state, observed_at, result, burst, debug or debug_device is not None, sample_rate)
     return True, True
