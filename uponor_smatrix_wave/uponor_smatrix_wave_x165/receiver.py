@@ -24,8 +24,8 @@ from uponor_smatrix_wave_x165.rtl_input import RtlError, RtlSdrDllStream, RtlSdr
 from uponor_smatrix_wave_x165.state import DeviceRegistry, display_temperature
 from uponor_smatrix_wave_x165.mqtt_bridge import MqttBridge, add_mqtt_arguments, config_from_args
 from uponor_smatrix_wave_x165.frame_log import FrameJournal
-from uponor_smatrix_wave_x165.interface import parse_house_temperature, parse_system_mode
-from uponor_smatrix_wave_x165.rooms import room_name
+from uponor_smatrix_wave_x165.interface import parse_house_temperature, parse_remote_setpoint, parse_system_mode
+from uponor_smatrix_wave_x165.rooms import room_name, room_primary_name
 
 
 def thermostat_id(value: str) -> bytes:
@@ -206,6 +206,18 @@ def present_decoded(
                 status = mqtt_bridge.observe_mode(controller_id, mode, observed_at) if mqtt_bridge else "MQTT disabled"
                 if not quiet:
                     print(f"[{observed_at:%H:%M:%S}] X-165 {controller_id.hex().upper()}  mode={mode.mode} via I-167 {interface_id.hex().upper()}  {status}", flush=True)
+                return True, False
+        if interface_id is not None:
+            try:
+                remote = parse_remote_setpoint(result["packet"], interface_id=interface_id)
+            except FrameError:
+                pass
+            else:
+                room = room_primary_name(remote.room_primary)
+                room_label = f"{room} (room_primary=0x{remote.room_primary:02X})" if room else f"unknown room (room_primary=0x{remote.room_primary:02X})"
+                if not quiet:
+                    print(f"[{observed_at:%H:%M:%S}] I-167 {interface_id.hex().upper()}  remote setpoint: {room_label}  "
+                          f"setpoint={display_temperature(remote.raw_setpoint)} C  remote_enabled={remote.remote_enabled}", flush=True)
                 return True, False
         if interface_id is not None:
             try:
