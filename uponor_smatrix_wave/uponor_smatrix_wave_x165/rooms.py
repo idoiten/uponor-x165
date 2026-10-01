@@ -28,3 +28,24 @@ ROOM_NAMES: dict[bytes, str] = {
 def room_name(device_id: bytes) -> str | None:
     """Look up the room name for a thermostat's RF device_id, if known."""
     return ROOM_NAMES.get(device_id)
+
+
+# Maps the I-167 remote-setpoint command's "room_primary" byte (see
+# interface.RemoteSetpointFrame) to a room name. This is a completely
+# different ID space from ROOM_NAMES above -- it has no relation to a
+# thermostat's own 4-byte device_id, and is only ever a single byte.
+#
+# Confirmed by changing one room's setpoint at a time via the I-167 and
+# matching which room_primary code carried the new value in the resulting
+# RemoteSetpointFrame (it's sent three times in quick succession right after
+# the change).
+ROOM_PRIMARY_NAMES: dict[int, str] = {
+    0x7C: "Sovrum 2",
+    0xD0: "Sovrum 4",
+    # Still unmapped: 0xFA, 0x3D, 0x52, 0x91, 0xA6, 0xBB, 0xE5.
+}
+
+
+def room_primary_name(room_primary: int) -> str | None:
+    """Look up the room name for a RemoteSetpointFrame's room_primary byte."""
+    return ROOM_PRIMARY_NAMES.get(room_primary)
