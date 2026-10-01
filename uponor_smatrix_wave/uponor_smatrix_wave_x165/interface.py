@@ -14,7 +14,12 @@ REMOTE_FIXED_21_23 = bytes.fromhex("00 08 10")
 # protocol constant -- confirmed by comparing against a second, unrelated
 # installation configured for 15.0C/25.0C, where only the bytes below
 # still matched exactly.
-REMOTE_FIXED_25 = 0x00
+#
+# Byte 25 also turned out not to be fixed: seen as 0x00 on every frame
+# from Sovrum 2 and Sovrum 4 captures, but 0x01 on a WC frame with a
+# plausible setpoint (24.5C). Likely a sequence/counter byte rather than
+# a protocol constant. Parsed out and exposed as unknown_byte_25 instead
+# of asserted, same treatment as unknown_byte_26.
 REMOTE_FIXED_27 = 0x64
 # Confirmed identical across both known installations regardless of their
 # min/max setpoint configuration, so still treated as fixed. Meaning
@@ -57,6 +62,7 @@ class RemoteSetpointFrame:
     status_byte: int
     min_setpoint_raw: int
     max_setpoint_raw: int
+    unknown_byte_25: int
     unknown_byte_26: int
     unknown_field_38_39: int
     raw_setpoint: int
@@ -84,7 +90,7 @@ def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointF
     if len(raw) != 44 or raw[9:13] != interface_id or raw[13:16] != bytes.fromhex("01 17 00"):
         raise FrameError("not a supported remote-setpoint frame for this interface")
     if (raw[17:20] != REMOTE_FIXED_17_19 or raw[21:24] != REMOTE_FIXED_21_23
-            or raw[25] != REMOTE_FIXED_25 or raw[27] != REMOTE_FIXED_27
+            or raw[27] != REMOTE_FIXED_27
             or raw[32:36] != REMOTE_FIXED_32_35):
         raise FrameError("unexpected remote-setpoint frame structure")
     if raw[24] not in (0x80, 0x88):
@@ -99,6 +105,7 @@ def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointF
         status_byte=raw[24],
         min_setpoint_raw=int.from_bytes(raw[28:30], "big"),
         max_setpoint_raw=int.from_bytes(raw[30:32], "big"),
+        unknown_byte_25=raw[25],
         unknown_byte_26=raw[26],
         unknown_field_38_39=int.from_bytes(raw[38:40], "big"),
         raw_setpoint=int.from_bytes(raw[36:38], "big"),
@@ -109,7 +116,8 @@ def build_remote_setpoint(
     *, interface_id: bytes, room_primary: int, room_secondary: int,
     remote_enabled: bool, raw_setpoint: int,
     min_setpoint_raw: int, max_setpoint_raw: int,
-    unknown_byte_26: int = 0x00, unknown_field_38_39: int = 0x0000,
+    unknown_byte_25: int = 0x00, unknown_byte_26: int = 0x00,
+    unknown_field_38_39: int = 0x0000,
 ) -> bytes:
     """Build an L44 frame as bytes only; this function performs no RF transmission.
 
@@ -120,8 +128,9 @@ def build_remote_setpoint(
     """
     if len(interface_id) != 4:
         raise ValueError("interface_id must contain exactly 4 bytes")
-    if not all(0 <= value <= 0xFF for value in (room_primary, room_secondary, unknown_byte_26)):
-        raise ValueError("room codes and unknown_byte_26 must be uint8")
+    if not all(0 <= value <= 0xFF for value in
+               (room_primary, room_secondary, unknown_byte_25, unknown_byte_26)):
+        raise ValueError("room codes, unknown_byte_25 and unknown_byte_26 must be uint8")
     if (room_primary - room_secondary) & 0xFF != 8:
         raise ValueError("room_primary must be eight greater than room_secondary")
     if not all(0 <= value <= 0xFFFF for value in
@@ -136,7 +145,7 @@ def build_remote_setpoint(
     raw.extend((room_secondary,))
     raw.extend(REMOTE_FIXED_21_23)
     raw.extend((0x88 if remote_enabled else 0x80,))
-    raw.extend((REMOTE_FIXED_25, unknown_byte_26, REMOTE_FIXED_27))
+    raw.extend((unknown_byte_25, unknown_byte_26, REMOTE_FIXED_27))
     raw.extend(min_setpoint_raw.to_bytes(2, "big"))
     raw.extend(max_setpoint_raw.to_bytes(2, "big"))
     raw.extend(REMOTE_FIXED_32_35)
