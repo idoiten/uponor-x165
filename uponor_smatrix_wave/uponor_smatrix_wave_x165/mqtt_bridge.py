@@ -5,7 +5,7 @@ import json
 import os
 import threading
 
-from .rooms import room_name
+from .rooms import device_id_for_room_primary, room_name
 from .state import DeviceState, display_temperature
 
 
@@ -50,8 +50,8 @@ def discovery_messages(config, device_id):
     name = room_name(bytes.fromhex(device_id))
     device = {"identifiers": [identifier], "name": name or f"Uponor {device_id}",
               "manufacturer": "Uponor", "model": "T-165 thermostat"}
-    for sensor in ("temperature", "setpoint"):
-        payload = {"name": sensor.title(), "unique_id": f"{identifier}_{sensor}",
+    for sensor in ("temperature", "setpoint", "min_setpoint", "max_setpoint"):
+        payload = {"name": sensor.replace("_", " ").title(), "unique_id": f"{identifier}_{sensor}",
                    "state_topic": f"{config.topic_prefix}/{device_id}/{sensor}",
                    "device_class": "temperature", "unit_of_measurement": "°C",
                    "suggested_display_precision": 1, "device": device}
@@ -96,8 +96,11 @@ class MqttBridge:
         self._latest = {}
         self._latest_house = {}
         self._latest_mode = {}
+        self._latest_outdoor = {}
+        self._latest_remote_setpoint = {}
         self._discovered = set()
         self._last_report = {}
+        self._last_remote_setpoint_report = {}
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
         client.on_connect_fail = self._on_connect_fail
@@ -137,6 +140,10 @@ class MqttBridge:
                 self._publish_house(frame, observed_at)
             for controller_id, frame, observed_at in self._latest_mode.values():
                 self._publish_mode(controller_id, frame, observed_at)
+            for controller_id, (raw_outdoor_temperature, observed_at) in self._latest_outdoor.items():
+                self._publish_outdoor(controller_id, raw_outdoor_temperature, observed_at)
+            for device_id_bytes, (remote, observed_at) in self._latest_remote_setpoint.items():
+                self._publish_remote_setpoint(device_id_bytes, remote, observed_at)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         with self._lock:
@@ -198,7 +205,7 @@ class MqttBridge:
         base = f"{self.config.topic_prefix}/interface/{device_id}"
         if identifier not in self._discovered:
             payload = {
-                "name": "House temperature", "unique_id": f"{identifier}_house_temperature",
+                "name": "Average Indoor Temperature", "unique_id": f"{identifier}_house_temperature",
                 "state_topic": f"{base}/house_temperature", "device_class": "temperature",
                 "state_class": "measurement", "unit_of_measurement": "°C",
                 "suggested_display_precision": 1, "expire_after": self.config.stale_after,
@@ -261,3 +268,75 @@ class MqttBridge:
             if not self._connected:
                 return "MQTT offline; latest system mode cached"
             return "MQTT queued" if self._publish_mode(controller_id, frame, observed_at) else "MQTT publish failed"
+
+    def _publish_outdoor(self, controller_id, raw_outdoor_temperature, observed_at):
+        device_id = controller_id.hex().upper()
+        identifier = f"uponor_x165_{device_id}"
+        base = f"{self.config.topic_prefix}/controller/{device_id}"
+        key = identifier + "_outdoor_temperature"
+        if key not in self._discovered:
+            payload = {
+                "name": "Outdoor Temperature", "unique_id": key,
+                "state_topic": f"{base}/outdoor_temperature", "device_class": "temperature",
+                "state_class": "measurement", "unit_of_measurement": "°C",
+                "suggested_display_precision": 1, "expire_after": self.config.stale_after,
+                "availability_topic": f"{self.config.topic_prefix}/bridge/status",
+                "device": {"identifiers": [identifier], "name": f"Uponor X-165 {device_id}",
+                           "manufacturer": "Uponor", "model": "X-165 controller"}}
+            if not self._publish(f"{self.config.discovery_prefix}/sensor/{identifier}/outdoor_temperature/config", json.dumps(payload)):
+                return False
+            self._discovered.add(key)
+            self.log(f"Home Assistant outdoor-temperature discovery queued: {device_id}")
+        results = [self._publish(f"{base}/outdoor_temperature", display_temperature(raw_outdoor_temperature)),
+                   self._publish(f"{base}/outdoor_temperature_last_seen", observed_at.isoformat())]
+        return all(results)
+
+    def observe_outdoor(self, controller_id, raw_outdoor_temperature, observed_at):
+        """raw_outdoor_temperature comes from a thermostat frame's tag 0x2D (shared across rooms)."""
+        if len(controller_id) != 4:
+            raise ValueError("controller_id must contain exactly 4 bytes")
+        with self._lock:
+            previous = self._latest_outdoor.get(controller_id)
+            if previous and previous[0] == raw_outdoor_temperature and 0 <= (observed_at - previous[1]).total_seconds() < 2:
+                return "MQTT duplicate suppressed"
+            self._latest_outdoor[controller_id] = (raw_outdoor_temperature, observed_at)
+            if not self._connected:
+                return "MQTT offline; latest outdoor temperature cached"
+            return "MQTT queued" if self._publish_outdoor(controller_id, raw_outdoor_temperature, observed_at) else "MQTT publish failed"
+
+    def _publish_remote_setpoint(self, device_id_bytes, remote, observed_at):
+        device_id = device_id_bytes.hex().upper()
+        if device_id not in self._discovered:
+            results = [self._publish(topic, payload) for topic, payload in discovery_messages(self.config, device_id)]
+            if not all(results):
+                return False
+            self._discovered.add(device_id)
+            self.log(f"Home Assistant MQTT discovery queued: {device_id}")
+        results = [
+            self._publish(f"{self.config.topic_prefix}/{device_id}/min_setpoint", display_temperature(remote.min_setpoint_raw)),
+            self._publish(f"{self.config.topic_prefix}/{device_id}/max_setpoint", display_temperature(remote.max_setpoint_raw)),
+        ]
+        return all(results)
+
+    def observe_remote_setpoint(self, remote, observed_at):
+        """Publish a RemoteSetpointFrame's min/max setpoint to its thermostat's MQTT device.
+
+        room_primary is a different ID space from the thermostat's own device_id
+        (see rooms.device_id_for_room_primary); when it doesn't resolve to a
+        known thermostat, there's nowhere to attach these sensors, so this is
+        skipped rather than guessed.
+        """
+        device_id_bytes = device_id_for_room_primary(remote.room_primary)
+        if device_id_bytes is None:
+            return "MQTT: unknown room_primary, min/max setpoint not published"
+        with self._lock:
+            key = device_id_bytes
+            signature = (remote.min_setpoint_raw, remote.max_setpoint_raw)
+            previous = self._last_remote_setpoint_report.get(key)
+            if previous and previous[0] == signature and 0 <= (observed_at - previous[1]).total_seconds() < 2:
+                return "MQTT duplicate suppressed"
+            self._last_remote_setpoint_report[key] = (signature, observed_at)
+            self._latest_remote_setpoint[key] = (remote, observed_at)
+            if not self._connected:
+                return "MQTT offline; latest min/max setpoint cached"
+            return "MQTT queued" if self._publish_remote_setpoint(device_id_bytes, remote, observed_at) else "MQTT publish failed"

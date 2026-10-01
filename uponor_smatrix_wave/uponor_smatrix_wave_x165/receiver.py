@@ -215,9 +215,10 @@ def present_decoded(
             else:
                 room = room_primary_name(remote.room_primary)
                 room_label = f"{room} (room_primary=0x{remote.room_primary:02X})" if room else f"unknown room (room_primary=0x{remote.room_primary:02X})"
+                status = mqtt_bridge.observe_remote_setpoint(remote, observed_at) if mqtt_bridge else "MQTT disabled"
                 if not quiet:
                     print(f"[{observed_at:%H:%M:%S}] I-167 {interface_id.hex().upper()}  remote setpoint: {room_label}  "
-                          f"setpoint={display_temperature(remote.raw_setpoint)} C  remote_enabled={remote.remote_enabled}", flush=True)
+                          f"setpoint={display_temperature(remote.raw_setpoint)} C  remote_enabled={remote.remote_enabled}  {status}", flush=True)
                 return True, False
         if interface_id is not None:
             try:
@@ -240,6 +241,8 @@ def present_decoded(
     state = registry.update(frame, observed_at)
     if mqtt_bridge is not None:
         status = mqtt_bridge.observe(state)
+        if frame.raw_outdoor_temperature is not None:
+            mqtt_bridge.observe_outdoor(frame.controller_id, frame.raw_outdoor_temperature, observed_at)
     if not show:
         return True, True
     if mqtt_bridge is not None:

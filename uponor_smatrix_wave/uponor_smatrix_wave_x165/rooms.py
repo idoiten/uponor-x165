@@ -61,3 +61,20 @@ ROOM_PRIMARY_NAMES: dict[int, str] = {
 def room_primary_name(room_primary: int) -> str | None:
     """Look up the room name for a RemoteSetpointFrame's room_primary byte."""
     return ROOM_PRIMARY_NAMES.get(room_primary)
+
+
+# Bridges the two independent ID spaces above by matching on room name, so a
+# RemoteSetpointFrame's min/max setpoint can be attached to the same MQTT
+# device as that room's thermostat (ROOM_NAMES' device_id), instead of only
+# being known by its unrelated room_primary byte.
+_NAME_TO_DEVICE_ID: dict[str, bytes] = {name: device_id for device_id, name in ROOM_NAMES.items()}
+ROOM_PRIMARY_TO_DEVICE_ID: dict[int, bytes] = {
+    room_primary: _NAME_TO_DEVICE_ID[name]
+    for room_primary, name in ROOM_PRIMARY_NAMES.items()
+    if name in _NAME_TO_DEVICE_ID
+}
+
+
+def device_id_for_room_primary(room_primary: int) -> bytes | None:
+    """Look up a thermostat's 4-byte device_id for a room_primary byte, via its room name."""
+    return ROOM_PRIMARY_TO_DEVICE_ID.get(room_primary)

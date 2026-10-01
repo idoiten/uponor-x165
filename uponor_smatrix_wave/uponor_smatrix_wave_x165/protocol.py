@@ -61,6 +61,21 @@ class ParsedThermostatFrame:
         value = self.tlvs.get(0x3D)
         return bool(value & 0x0040) if value is not None else None
 
+    @property
+    def raw_outdoor_temperature(self) -> int | None:
+        """Tag 0x2D in long (L51) status frames.
+
+        Confirmed against a live outdoor reading (user-reported 20.3C matched
+        a decoded 20.4C) -- unlike raw_temperature/raw_setpoint, this value is
+        identical across every room's frame at a given moment, since it's a
+        single shared outdoor sensor rather than a per-room reading.
+        """
+        return self.tlvs.get(0x2D)
+
+    @property
+    def outdoor_temperature_c(self) -> float | None:
+        return uponor_temperature(self.raw_outdoor_temperature) if self.raw_outdoor_temperature is not None else None
+
 
 def uponor_temperature(raw: int) -> float:
     """Decode an Uponor uint16 value expressed in tenths Fahrenheit."""
