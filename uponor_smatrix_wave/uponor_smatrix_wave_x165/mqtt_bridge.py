@@ -5,6 +5,7 @@ import json
 import os
 import threading
 
+from .rooms import room_name
 from .state import DeviceState, display_temperature
 
 
@@ -46,7 +47,8 @@ def config_from_args(args):
 
 def discovery_messages(config, device_id):
     identifier = f"uponor_{device_id}"
-    device = {"identifiers": [identifier], "name": f"Uponor {device_id}",
+    name = room_name(bytes.fromhex(device_id))
+    device = {"identifiers": [identifier], "name": name or f"Uponor {device_id}",
               "manufacturer": "Uponor", "model": "T-165 thermostat"}
     for sensor in ("temperature", "setpoint"):
         payload = {"name": sensor.title(), "unique_id": f"{identifier}_{sensor}",
