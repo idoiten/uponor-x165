@@ -7,8 +7,23 @@ from .protocol import PREAMBLE_SYNC, FrameError, uponor_temperature, validate_fr
 
 REMOTE_FIXED_17_19 = bytes.fromhex("00 0B 00")
 REMOTE_FIXED_21_23 = bytes.fromhex("00 08 10")
-REMOTE_FIXED_25_35 = bytes.fromhex("00 05 64 01 9A 03 B6 02 A8 03 14")
-REMOTE_FIXED_38_39 = bytes.fromhex("00 12")
+# Bytes 25-35 of the remote-setpoint frame were originally treated as one
+# fixed 11-byte blob, captured on a single reference installation. That
+# broke on every other installation: bytes 28-31 are actually that
+# system's *configured* min/max setpoint (here: 5.0C/35.0C), not a
+# protocol constant -- confirmed by comparing against a second, unrelated
+# installation configured for 15.0C/25.0C, where only the bytes below
+# still matched exactly.
+REMOTE_FIXED_25 = 0x00
+REMOTE_FIXED_27 = 0x64
+# Confirmed identical across both known installations regardless of their
+# min/max setpoint configuration, so still treated as fixed. Meaning
+# unknown (not outdoor temperature -- that's parse_house_temperature).
+REMOTE_FIXED_32_35 = bytes.fromhex("02 A8 03 14")
+# Also turned out to be per-installation, not fixed: 0x0012 on the original
+# reference installation, 0x0000 on a second, unrelated one (confirmed
+# across 9 different rooms and 2 separate capture sessions there). Meaning
+# unknown; parsed out rather than asserted.
 
 
 def validate_i167_frame(raw: bytes, *, interface_id: bytes) -> bytes:
@@ -40,6 +55,10 @@ class RemoteSetpointFrame:
     room_primary: int
     room_secondary: int
     status_byte: int
+    min_setpoint_raw: int
+    max_setpoint_raw: int
+    unknown_byte_26: int
+    unknown_field_38_39: int
     raw_setpoint: int
 
     @property
@@ -50,6 +69,14 @@ class RemoteSetpointFrame:
     def setpoint_c(self) -> float:
         return uponor_temperature(self.raw_setpoint)
 
+    @property
+    def min_setpoint_c(self) -> float:
+        return uponor_temperature(self.min_setpoint_raw)
+
+    @property
+    def max_setpoint_c(self) -> float:
+        return uponor_temperature(self.max_setpoint_raw)
+
 
 def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointFrame:
     """Parse the observed wireless I-167 L44 remote-setpoint command."""
@@ -57,7 +84,8 @@ def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointF
     if len(raw) != 44 or raw[9:13] != interface_id or raw[13:16] != bytes.fromhex("01 17 00"):
         raise FrameError("not a supported remote-setpoint frame for this interface")
     if (raw[17:20] != REMOTE_FIXED_17_19 or raw[21:24] != REMOTE_FIXED_21_23
-            or raw[25:36] != REMOTE_FIXED_25_35 or raw[38:40] != REMOTE_FIXED_38_39):
+            or raw[25] != REMOTE_FIXED_25 or raw[27] != REMOTE_FIXED_27
+            or raw[32:36] != REMOTE_FIXED_32_35):
         raise FrameError("unexpected remote-setpoint frame structure")
     if raw[24] not in (0x80, 0x88):
         raise FrameError(f"unexpected remote-control status {raw[24]:02X}")
@@ -69,6 +97,10 @@ def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointF
         room_primary=raw[16],
         room_secondary=raw[20],
         status_byte=raw[24],
+        min_setpoint_raw=int.from_bytes(raw[28:30], "big"),
+        max_setpoint_raw=int.from_bytes(raw[30:32], "big"),
+        unknown_byte_26=raw[26],
+        unknown_field_38_39=int.from_bytes(raw[38:40], "big"),
         raw_setpoint=int.from_bytes(raw[36:38], "big"),
     )
 
@@ -76,16 +108,25 @@ def parse_remote_setpoint(raw: bytes, *, interface_id: bytes) -> RemoteSetpointF
 def build_remote_setpoint(
     *, interface_id: bytes, room_primary: int, room_secondary: int,
     remote_enabled: bool, raw_setpoint: int,
+    min_setpoint_raw: int, max_setpoint_raw: int,
+    unknown_byte_26: int = 0x00, unknown_field_38_39: int = 0x0000,
 ) -> bytes:
-    """Build an L44 frame as bytes only; this function performs no RF transmission."""
+    """Build an L44 frame as bytes only; this function performs no RF transmission.
+
+    min_setpoint_raw/max_setpoint_raw must match this installation's own
+    configured setpoint limits (see RemoteSetpointFrame.min_setpoint_raw/
+    max_setpoint_raw from a captured frame) -- they are not a fixed
+    protocol constant and differ between installations.
+    """
     if len(interface_id) != 4:
         raise ValueError("interface_id must contain exactly 4 bytes")
-    if not all(0 <= value <= 0xFF for value in (room_primary, room_secondary)):
-        raise ValueError("room codes must be uint8")
+    if not all(0 <= value <= 0xFF for value in (room_primary, room_secondary, unknown_byte_26)):
+        raise ValueError("room codes and unknown_byte_26 must be uint8")
     if (room_primary - room_secondary) & 0xFF != 8:
         raise ValueError("room_primary must be eight greater than room_secondary")
-    if not 0 <= raw_setpoint <= 0xFFFF:
-        raise ValueError("raw_setpoint must be uint16")
+    if not all(0 <= value <= 0xFFFF for value in
+               (raw_setpoint, min_setpoint_raw, max_setpoint_raw, unknown_field_38_39)):
+        raise ValueError("raw_setpoint/min_setpoint_raw/max_setpoint_raw/unknown_field_38_39 must be uint16")
     raw = bytearray(PREAMBLE_SYNC)
     raw.extend(b"\x21")
     raw.extend(interface_id)
@@ -95,9 +136,12 @@ def build_remote_setpoint(
     raw.extend((room_secondary,))
     raw.extend(REMOTE_FIXED_21_23)
     raw.extend((0x88 if remote_enabled else 0x80,))
-    raw.extend(REMOTE_FIXED_25_35)
+    raw.extend((REMOTE_FIXED_25, unknown_byte_26, REMOTE_FIXED_27))
+    raw.extend(min_setpoint_raw.to_bytes(2, "big"))
+    raw.extend(max_setpoint_raw.to_bytes(2, "big"))
+    raw.extend(REMOTE_FIXED_32_35)
     raw.extend(raw_setpoint.to_bytes(2, "big"))
-    raw.extend(REMOTE_FIXED_38_39)
+    raw.extend(unknown_field_38_39.to_bytes(2, "big"))
     raw.extend(bytes(4))
     return _finish_i167_frame(raw)
 
